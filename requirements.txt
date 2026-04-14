@@ -5,3 +5,5 @@ scikit-learn
 requests
 joblib
 scipy
+openpyxl
+xlrd
