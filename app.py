@@ -1,14 +1,13 @@
-# app.py — AFL Odds Analyzer: Market-Aware Betting Model
+# app.py — AFL Odds Analyzer
 # ═══════════════════════════════════════════════════════════
-# Complete rewrite. Modules:
-#   data_fetcher        → download AFL results
-#   feature_engineering → calculate all features
-#   rating_model        → Elo ratings (replaces elo_model)
-#   probability_engine  → true probability calculation
-#   odds_comparison     → overround removal + edge
-#   decision_engine     → bet decisions + explanations
-#   odds_fetcher        → live bookmaker odds
-#   weather             → venue weather
+# Professional-grade market-aware betting model.
+# Finds where bookmakers are wrong using:
+#   • Margin-adjusted Elo ratings (multi-season)
+#   • Calibrated ML model (form + advanced stats)
+#   • Opponent-adjusted scoring (not raw averages)
+#   • Real historical odds for backtesting (CLV measurement)
+#   • Live bookmaker odds (The Odds API)
+#   • Weather, travel, rest, injury adjustments
 # ═══════════════════════════════════════════════════════════
 
 import streamlit as st
@@ -24,18 +23,14 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Module imports ───────────────────────────────────────
-from data_fetcher         import load_data, download_all_data
-from feature_engineering  import build_feature_matrix, weighted_recent_form, travel_penalty, days_rest, VENUE_STATE
-from rating_model         import calculate_elo_ratings, get_elo_probability, win_probability_from_elo, INITIAL_RATING
-from probability_engine   import (
-    train_probability_model, load_probability_model,
-    calculate_true_probability, FEATURE_COLS
-)
-from odds_comparison      import full_odds_analysis, remove_overround
-from decision_engine      import classify_bet, generate_explanation, backtest_model
-from odds_fetcher         import fetch_afl_odds, get_best_bookmaker_for_team
-from weather              import fetch_weather_for_venue, weather_elo_adjustment, VENUE_COORDS
+from data_fetcher        import load_data, download_all_data
+from feature_engineering import build_feature_matrix, weighted_recent_form, travel_penalty, days_rest, VENUE_STATE
+from rating_model        import calculate_elo_ratings, get_elo_probability, win_probability_from_elo, INITIAL_RATING
+from probability_engine  import train_probability_model, load_probability_model, calculate_true_probability
+from odds_comparison     import full_odds_analysis, remove_overround
+from decision_engine     import classify_bet, generate_explanation, backtest_model
+from odds_fetcher        import fetch_afl_odds, get_best_bookmaker_for_team
+from weather             import fetch_weather_for_venue, weather_elo_adjustment, VENUE_COORDS
 
 # ── Injury database ──────────────────────────────────────
 KNOWN_PLAYERS = {
@@ -77,7 +72,6 @@ KNOWN_PLAYERS = {
     "Charlie Dixon":       {"price": 680_000, "position": "Key Forward"},
     "Nat Fyfe":            {"price": 640_000, "position": "Midfielder"},
     "Scott Pendlebury":    {"price": 650_000, "position": "Midfielder"},
-    "Max Gawn":            {"price": 790_000, "position": "Ruck"},
     "Rowan Marshall":      {"price": 710_000, "position": "Ruck"},
     "Dustin Martin":       {"price": 690_000, "position": "Midfielder"},
     "Tom Lynch":           {"price": 660_000, "position": "Key Forward"},
@@ -91,15 +85,17 @@ KNOWN_PLAYERS = {
 }
 
 POSITION_MULT = {
-    "Midfielder":1.2,"Mid":1.2,
-    "Key Forward":1.1,"Forward":1.0,
-    "Key Defender":1.0,"Defender":0.95,
-    "Ruck":1.05,"Utility":0.85,"Unknown":1.0,
+    "Midfielder": 1.2, "Mid": 1.2,
+    "Key Forward": 1.1, "Forward": 1.0,
+    "Key Defender": 1.0, "Defender": 0.95,
+    "Ruck": 1.05, "Utility": 0.85, "Unknown": 1.0,
 }
 
+
 def player_elo_penalty(price, position="Unknown"):
-    pct  = (max(100_000, min(950_000, price)) - 100_000) / 850_000
+    pct = (max(100_000, min(950_000, price)) - 100_000) / 850_000
     return -round(min(pct * 55 * POSITION_MULT.get(position, 1.0), 55), 1)
+
 
 def lookup_player(name):
     nl = name.lower()
@@ -108,13 +104,14 @@ def lookup_player(name):
             return v["price"], v["position"]
     return None
 
+
 # ─────────────────────────────────────────────────────────
 # HEADER
 # ─────────────────────────────────────────────────────────
 st.title("🏉 AFL Odds Analyzer")
 st.markdown(
     "*Professional-grade market-aware betting model — "
-    "find where the bookmakers are wrong*"
+    "find where bookmakers are wrong*"
 )
 
 # ─────────────────────────────────────────────────────────
@@ -123,10 +120,10 @@ st.markdown(
 with st.sidebar:
     st.header("⚙️ System Controls")
 
-    load_btn    = st.button("📥 Load / Refresh Data",       use_container_width=True, type="primary")
-    odds_btn    = st.button("💰 Fetch Live Bookmaker Odds", use_container_width=True)
-    retrain_btn = st.button("🔄 Force Retrain Model",       use_container_width=True)
-    backtest_btn= st.button("📊 Run Backtest",              use_container_width=True)
+    load_btn     = st.button("📥 Load / Refresh Data",        use_container_width=True, type="primary")
+    odds_btn     = st.button("💰 Fetch Live Bookmaker Odds",  use_container_width=True)
+    retrain_btn  = st.button("🔄 Force Retrain Model",        use_container_width=True)
+    backtest_btn = st.button("📊 Run Backtest",               use_container_width=True)
 
     st.divider()
     stake    = st.number_input("Stake per bet ($)", 1, 1000, 50)
@@ -142,56 +139,77 @@ with st.sidebar:
     if "api_status" in st.session_state:
         st.caption(st.session_state["api_status"])
 
+
 # ─────────────────────────────────────────────────────────
 # DATA LOADING
 # ─────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def get_data():
-    return load_data()
+    return load_data()  # Returns (results_df, stats_df, hist_odds_df)
+
 
 @st.cache_data(show_spinner=False)
 def get_ratings(_df):
     return calculate_elo_ratings(_df)
 
+
 @st.cache_data(show_spinner=False)
-def get_features(_df, _elo_hist):
-    return build_feature_matrix(_df, _elo_hist)
+def get_features(_df, _elo_hist, _stats_df):
+    return build_feature_matrix(_df, _elo_hist, _stats_df)
+
 
 @st.cache_resource(show_spinner=False)
 def get_prob_model(_feat_df):
-    m, s = load_probability_model()
+    m, s, fc = load_probability_model()
     if m is None:
-        m, s, _ = train_probability_model(_feat_df)
-    return m, s
+        m, s, fc, _ = train_probability_model(_feat_df)
+    return m, s, fc
+
 
 if load_btn:
-    st.cache_data.clear(); st.cache_resource.clear()
-    with st.spinner("Downloading AFL data from Squiggle..."):
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    with st.spinner("Downloading AFL data (results + stats + historical odds)..."):
         download_all_data()
     st.rerun()
 
 if retrain_btn:
-    for f in ["afl_prob_model.pkl", "afl_prob_scaler.pkl"]:
-        if os.path.exists(f): os.remove(f)
+    for f in ["afl_prob_model.pkl", "afl_prob_scaler.pkl", "afl_prob_feature_cols.pkl"]:
+        if os.path.exists(f):
+            os.remove(f)
     st.cache_resource.clear()
     st.rerun()
 
-results_df = get_data()
-if results_df is None:
+# Load all data
+data_tuple = get_data()
+if data_tuple is None or data_tuple[0] is None:
     st.info("👈 Click **Load / Refresh Data** in the sidebar to get started.")
     st.stop()
 
-with st.spinner("Building Elo ratings with margin-of-victory multiplier..."):
+results_df, stats_df, hist_odds_df = data_tuple
+
+with st.spinner("Building Elo ratings..."):
     elo_ratings, elo_history = get_ratings(results_df)
 
 with st.spinner("Engineering features..."):
-    feature_df = get_features(results_df, elo_history)
+    feature_df = get_features(results_df, elo_history, stats_df)
 
-with st.spinner("Loading calibrated probability model..."):
-    prob_model, prob_scaler = get_prob_model(feature_df)
+with st.spinner("Loading probability model..."):
+    prob_model, prob_scaler, feature_cols = get_prob_model(feature_df)
 
 all_teams  = sorted(elo_ratings.keys())
 all_venues = sorted([v for v in VENUE_COORDS if v != "Unknown"])
+
+# Model info banner
+has_stats = stats_df is not None
+has_hist_odds = hist_odds_df is not None and len(hist_odds_df) > 0
+adv_stat_count = len([c for c in feature_cols if any(s in c for s in ['inside50s','clearances','tackles'])])
+
+col_info1, col_info2, col_info3, col_info4 = st.columns(4)
+col_info1.metric("Games in model", f"{len(results_df):,}")
+col_info2.metric("Advanced stats", "✅ Active" if has_stats else "⚠️ Unavailable")
+col_info3.metric("Historical odds", f"✅ {len(hist_odds_df):,} records" if has_hist_odds else "⚠️ Simulated only")
+col_info4.metric("ML features", len(feature_cols))
 
 # ─────────────────────────────────────────────────────────
 # LIVE ODDS
@@ -200,13 +218,14 @@ if "live_odds" not in st.session_state:
     st.session_state["live_odds"] = None
 
 if odds_btn:
-    with st.spinner("Fetching live odds from Sportsbet, TAB, Neds, Ladbrokes..."):
+    with st.spinner("Fetching live odds..."):
         games, status = fetch_afl_odds()
         st.session_state["live_odds"]  = games
         st.session_state["api_status"] = status
     st.rerun()
 
 live_odds = st.session_state["live_odds"]
+
 
 # ─────────────────────────────────────────────────────────
 # TABS
@@ -219,6 +238,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "❓ How It Works",
 ])
 
+
 # ══════════════════════════════════════════════════════════
 # TAB 1: PREDICTIONS
 # ══════════════════════════════════════════════════════════
@@ -230,66 +250,67 @@ with tab1:
         valid = [g for g in live_odds if g["home_team"] in all_teams and g["away_team"] in all_teams]
         DEFAULTS = []
         venue_map = {
-            "Collingwood":"MCG","Melbourne":"MCG","Richmond":"MCG","Carlton":"Marvel Stadium",
-            "St Kilda":"Marvel Stadium","Western Bulldogs":"Marvel Stadium","Essendon":"Marvel Stadium",
-            "Hawthorn":"MCG","North Melbourne":"Marvel Stadium","Geelong":"GMHBA Stadium",
-            "Brisbane Lions":"Gabba","Gold Coast":"People First Stadium",
-            "Adelaide":"Adelaide Oval","Port Adelaide":"Adelaide Oval",
-            "Fremantle":"Optus Stadium","West Coast":"Optus Stadium",
-            "Sydney":"SCG","GWS Giants":"Giants Stadium",
+            "Collingwood": "MCG", "Melbourne": "MCG", "Richmond": "MCG",
+            "Carlton": "Marvel Stadium", "St Kilda": "Marvel Stadium",
+            "Western Bulldogs": "Marvel Stadium", "Essendon": "Marvel Stadium",
+            "Hawthorn": "MCG", "North Melbourne": "Marvel Stadium",
+            "Geelong": "GMHBA Stadium", "Brisbane Lions": "Gabba",
+            "Gold Coast": "People First Stadium", "Adelaide": "Adelaide Oval",
+            "Port Adelaide": "Adelaide Oval", "Fremantle": "Optus Stadium",
+            "West Coast": "Optus Stadium", "Sydney": "SCG",
+            "GWS Giants": "Giants Stadium",
         }
         for g in valid[:9]:
             v = venue_map.get(g["home_team"], "MCG")
             DEFAULTS.append((g["home_team"], g["away_team"], v, g["best_home_odds"]))
         if not DEFAULTS:
-            DEFAULTS = [("Collingwood","Carlton","MCG",1.72),("Brisbane Lions","GWS Giants","Gabba",2.10)]
+            DEFAULTS = [("Collingwood", "Carlton", "MCG", 1.72)]
     else:
         DEFAULTS = [
-            ("Collingwood","Carlton","MCG",1.72),
-            ("Brisbane Lions","GWS Giants","Gabba",2.10),
-            ("Melbourne","Geelong","MCG",1.90),
-            ("Port Adelaide","Essendon","Adelaide Oval",1.65),
-            ("Sydney","Richmond","SCG",1.55),
+            ("Collingwood", "Carlton",       "MCG",            1.72),
+            ("Brisbane Lions", "GWS Giants", "Gabba",          2.10),
+            ("Melbourne", "Geelong",         "MCG",            1.90),
+            ("Port Adelaide", "Essendon",    "Adelaide Oval",  1.65),
+            ("Sydney", "Richmond",           "SCG",            1.55),
         ]
 
     matches_raw = []
-    with st.expander("📋 Enter Matches (click to expand)", expanded=True):
-        for i,(home,away,venue,odds) in enumerate(DEFAULTS):
-            c1,c2,c3,c4,c5 = st.columns([2,2,2,1.3,1.3])
-            h  = c1.selectbox("Home",   all_teams,  index=all_teams.index(home)    if home  in all_teams  else 0, key=f"h{i}")
-            a  = c2.selectbox("Away",   all_teams,  index=all_teams.index(away)    if away  in all_teams  else 1, key=f"a{i}")
-            v  = c3.selectbox("Venue",  all_venues, index=all_venues.index(venue)  if venue in all_venues else 0, key=f"v{i}")
-            o  = c4.number_input("Bookie odds (H)", 1.01, 20.0, float(odds), 0.05, key=f"o{i}",
-                                 help="Decimal odds for home team to win from any bookmaker")
-            gd = c5.date_input("Date", value=date.today()+timedelta(days=4), key=f"d{i}")
-            matches_raw.append({"home":h,"away":a,"venue":v,"odds":o,"date":gd})
+    with st.expander("📋 Enter Matches", expanded=True):
+        for i, (home, away, venue, odds) in enumerate(DEFAULTS):
+            c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1.3, 1.3])
+            h  = c1.selectbox("Home",  all_teams,  index=all_teams.index(home)    if home  in all_teams  else 0, key=f"h{i}")
+            a  = c2.selectbox("Away",  all_teams,  index=all_teams.index(away)    if away  in all_teams  else 1, key=f"a{i}")
+            v  = c3.selectbox("Venue", all_venues, index=all_venues.index(venue)  if venue in all_venues else 0, key=f"v{i}")
+            o  = c4.number_input("Bookie odds (H)", 1.01, 20.0, float(odds), 0.05, key=f"o{i}")
+            gd = c5.date_input("Date", value=date.today() + timedelta(days=4), key=f"d{i}")
+            matches_raw.append({"home": h, "away": a, "venue": v, "odds": o, "date": gd})
             st.markdown("---")
 
     # ── Injuries ─────────────────────────────────────────
     with st.expander("🏥 Injury & Team Selection", expanded=False):
-        st.markdown("""
-        Enter ruled-out players. Type their name — if in our database, price fills automatically.
-        Get SuperCoach prices free at **supercoach.com.au**.
-        """)
+        st.markdown(
+            "Enter ruled-out players. If in the database, price fills automatically. "
+            "Get SuperCoach prices at **supercoach.com.au**."
+        )
         n_inj = st.number_input("Teams with injuries:", 0, 18, 0, key="n_inj")
-        injury_adj   = {}
-        injury_notes_by_team = {}
+        injury_adj            = {}
+        injury_notes_by_team  = {}
 
         for i in range(int(n_inj)):
-            col_t, col_r = st.columns([2,4])
+            col_t, col_r = st.columns([2, 4])
             inj_team = col_t.selectbox("Team", all_teams, key=f"it{i}")
             with col_r:
-                n_pl = st.number_input(f"Players out:", 1, 8, 1, key=f"np{i}")
+                n_pl = st.number_input("Players out:", 1, 8, 1, key=f"np{i}")
                 total_pen = 0
                 notes = []
                 for j in range(int(n_pl)):
-                    pc1,pc2,pc3 = st.columns([2,1,1])
+                    pc1, pc2, pc3 = st.columns([2, 1, 1])
                     pname = pc1.text_input(f"Player {j+1}", key=f"pn{i}{j}")
                     dp, dpos = 400, "Midfielder"
                     if pname:
                         found = lookup_player(pname)
                         if found:
-                            dp, dpos = found[0]//1000, found[1]
+                            dp, dpos = found[0] // 1000, found[1]
                             pc1.caption("✅ In database")
                     pprice = pc2.number_input("SC $k", 100, 950, dp, 10, key=f"pp{i}{j}") * 1000
                     ppos   = pc3.selectbox("Pos", list(POSITION_MULT.keys()),
@@ -305,13 +326,13 @@ with tab1:
                     injury_notes_by_team[inj_team] = notes
                     st.info(f"{inj_team}: **{total_pen:+.0f} Elo pts** total injury penalty")
 
-    # ── Run analysis ──────────────────────────────────────
+    # ── Run ───────────────────────────────────────────────
     run = st.button("🔮 Analyse All Matches", type="primary", use_container_width=True)
 
     if run:
         all_results = []
 
-        # Fetch weather
+        # Weather
         wx_cache = {}
         with st.status("🌤️ Fetching weather...", expanded=False) as s:
             for m in matches_raw:
@@ -324,24 +345,24 @@ with tab1:
         with st.status("🤖 Running probability engine...", expanded=False) as s:
             for m in matches_raw:
                 home, away, venue = m["home"], m["away"], m["venue"]
-                gdate = m["date"]
+                gdate       = m["date"]
                 bookie_odds = m["odds"]
 
-                # Rest adjustments
-                r_h_days, r_h_pen = days_rest(home, results_df, gdate, len(results_df)-1)
-                r_a_days, r_a_pen = days_rest(away, results_df, gdate, len(results_df)-1)
+                # Rest
+                r_h_days, r_h_pen = days_rest(home, results_df, gdate, len(results_df) - 1)
+                r_a_days, r_a_pen = days_rest(away, results_df, gdate, len(results_df) - 1)
                 rest_adj_dict = {}
                 if r_h_pen: rest_adj_dict[home] = r_h_pen
                 if r_a_pen: rest_adj_dict[away] = r_a_pen
 
-                # Travel adjustments
+                # Travel
                 trv_h = travel_penalty(home, venue)
                 trv_a = travel_penalty(away, venue)
                 travel_adj_dict = {}
                 if trv_h: travel_adj_dict[home] = trv_h
                 if trv_a: travel_adj_dict[away] = trv_a
 
-                # Weather → Elo adjustment
+                # Weather
                 wx = wx_cache.get(venue, {})
                 home_elo_raw = elo_ratings.get(home, INITIAL_RATING)
                 away_elo_raw = elo_ratings.get(away, INITIAL_RATING)
@@ -350,28 +371,26 @@ with tab1:
                 if wx_h_adj: wx_adj_dict[home] = wx_h_adj
                 if wx_a_adj: wx_adj_dict[away] = wx_a_adj
 
-                # Injury adjustments
+                # Injuries
                 inj_adj = {k: v for k, v in injury_adj.items() if k in [home, away]}
 
-                # True probability breakdown
+                # Probability
                 prob_bd = calculate_true_probability(
-                    home, away, elo_ratings, results_df,
-                    prob_model, prob_scaler,
+                    home, away, elo_ratings, results_df, stats_df,
+                    prob_model, prob_scaler, feature_cols,
                     injury_adj=inj_adj,
                     rest_adj=rest_adj_dict,
                     travel_adj=travel_adj_dict,
                 )
 
-                # Apply weather to final prob (direct adjustment)
+                # Weather probability shift
                 if wx_h_adj or wx_a_adj:
-                    base_p = win_probability_from_elo(
-                        home_elo_raw, away_elo_raw
-                    )
-                    wx_adjusted_p = win_probability_from_elo(
+                    base_p = win_probability_from_elo(home_elo_raw, away_elo_raw)
+                    wx_adj_p = win_probability_from_elo(
                         home_elo_raw + wx_h_adj,
                         away_elo_raw + wx_a_adj,
                     )
-                    wx_shift = wx_adjusted_p - base_p
+                    wx_shift = wx_adj_p - base_p
                     prob_bd['final_prob'] = float(np.clip(
                         prob_bd['final_prob'] + wx_shift * 0.3, 0.05, 0.95
                     ))
@@ -381,10 +400,8 @@ with tab1:
 
                 final_prob = prob_bd['final_prob']
 
-                # Build bookmaker list for odds_comparison
+                # Bookmaker list
                 bm_list = []
-                # Always include manually entered odds
-                # We need away odds — use reciprocal adjusted for 5% margin as proxy
                 proxy_away = round(1.0 / max(0.05, (1 - final_prob) * 0.95), 2)
                 bm_list.append({
                     'bookmaker': 'You entered',
@@ -392,7 +409,6 @@ with tab1:
                     'away_odds': proxy_away,
                 })
 
-                # Add live odds if available
                 live_match = None
                 if live_odds:
                     for g in live_odds:
@@ -407,19 +423,14 @@ with tab1:
                                     })
                             break
 
-                # Odds analysis
-                odds_bd = full_odds_analysis(
-                    home, away, final_prob, bm_list, stake
-                )
+                odds_bd = full_odds_analysis(home, away, final_prob, bm_list, stake)
 
-                # Generate explanation text
                 inj_notes_combined = (
                     injury_notes_by_team.get(home, []) +
                     injury_notes_by_team.get(away, [])
                 )
                 explanation, classification, label, colour = generate_explanation(
-                    home, away, prob_bd, odds_bd,
-                    inj_notes_combined, wx, stake
+                    home, away, prob_bd, odds_bd, inj_notes_combined, wx, stake
                 )
 
                 rest_notes = []
@@ -456,16 +467,15 @@ with tab1:
             for r in all_val if r["odds_bd"]
         )
 
-        m1,m2,m3,m4,m5 = st.columns(5)
-        m1.metric("Games", len(all_results))
-        m2.metric("🔥 Strong bets", len(strong_bets))
-        m3.metric("✅ Bets", len(bets))
-        m4.metric("❌ No bet", len(no_bets))
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Games",         len(all_results))
+        m2.metric("🔥 Strong bets",len(strong_bets))
+        m3.metric("✅ Bets",        len(bets))
+        m4.metric("❌ No bet",      len(no_bets))
         m5.metric(f"Total EV (${stake})", f"${total_ev:+.2f}")
 
         # ── Summary table ─────────────────────────────────
         st.markdown("### Results — Quick View")
-        st.caption("Green = value bet identified | Red = no value")
 
         tbl_rows = []
         for r in all_results:
@@ -473,20 +483,19 @@ with tab1:
             o  = r["odds_bd"]
             ho = o["home_edge"]
             ao = o["away_edge"]
-            # Pick the better side to display
             if ho >= ao:
-                edge = ho; odds = o["best_home_odds"]; bm = o["best_home_bm"]; ev = o["home_ev"]
-                fair = o["fair_home_odds"]; mkt = o["market_home_prob"]
+                edge = ho; odds = o["best_home_odds"]; bm = o["best_home_bm"]
+                ev = o["home_ev"]; mkt = o["market_home_prob"]
             else:
-                edge = ao; odds = o["best_away_odds"]; bm = o["best_away_bm"]; ev = o["away_ev"]
-                fair = o["fair_away_odds"]; mkt = o["market_away_prob"]
+                edge = ao; odds = o["best_away_odds"]; bm = o["best_away_bm"]
+                ev = o["away_ev"]; mkt = o["market_away_prob"]
 
             tbl_rows.append({
                 "Match":          f"{r['home']} vs {r['away']}",
                 "Our Prob (H)":   f"{p['final_prob']*100:.1f}%",
                 "Mkt Prob (H)":   f"{mkt*100:.1f}%",
                 "Prob diff":      f"{(p['final_prob']-o['market_home_prob'])*100:+.1f}pp",
-                "Our Fair Odds":  fair,
+                "Our Fair Odds":  round(1.0/p['final_prob'],2),
                 "Best Odds":      odds,
                 "Best at":        bm,
                 "Edge":           f"{edge*100:+.2f}%",
@@ -496,8 +505,6 @@ with tab1:
             })
 
         tdf = pd.DataFrame(tbl_rows)
-
-        BET_CLASSES = {"STRONG_BET", "BET", "SMALL_BET"}
 
         def row_colour(row):
             cls = all_results[list(tdf.index).index(row.name)]["classification"]
@@ -520,124 +527,123 @@ with tab1:
         # ── Deep dives ────────────────────────────────────
         st.divider()
         st.markdown("### 🔍 Full Game Breakdowns")
-        st.markdown(
-            "Every prediction explained line by line. "
-            "Click a game to see exactly what drove the number."
-        )
 
         for r in all_results:
             p = r["prob_bd"]
             o = r["odds_bd"]
             icon = {"STRONG_BET":"🔥","BET":"✅","SMALL_BET":"🟡","NO_BET":"❌","FADE":"🔄"}.get(r["classification"],"❓")
-            label_short = r["label"]
 
-            with st.expander(f"{icon} {r['home']} vs {r['away']}  —  {label_short}"):
-
+            with st.expander(f"{icon} {r['home']} vs {r['away']}  —  {r['label']}"):
                 col1, col2, col3 = st.columns(3)
 
                 with col1:
                     st.markdown("**📊 Probability**")
-                    st.metric("Elo model",         f"{p['elo_prob']*100:.1f}%")
-                    st.metric("ML model",          f"{p['ml_prob']*100:.1f}%")
-                    st.metric("Final (blended)",   f"{p['final_prob']*100:.1f}%")
-                    st.metric("Market consensus",  f"{o['market_home_prob']*100:.1f}%")
+                    st.metric("Elo model",       f"{p['elo_prob']*100:.1f}%")
+                    st.metric("ML model",        f"{p['ml_prob']*100:.1f}%")
+                    st.metric("Final (blended)", f"{p['final_prob']*100:.1f}%")
+                    st.metric("Market consensus",f"{o['market_home_prob']*100:.1f}%")
                     diff = (p['final_prob'] - o['market_home_prob']) * 100
-                    st.metric("Model vs market",   f"{diff:+.1f}pp",
-                              delta="Model more bullish on home" if diff > 0 else "Model more bullish on away")
+                    st.metric("Model vs market", f"{diff:+.1f}pp",
+                              delta="Bullish on home" if diff > 0 else "Bullish on away")
 
                 with col2:
                     st.markdown("**💰 Value**")
-                    st.metric("Our fair odds (H)", o['fair_home_odds'])
-                    st.metric("Best bookie (H)",   o['best_home_odds'], delta=f"at {o['best_home_bm']}")
-                    st.metric("Home edge",         f"{o['home_edge']*100:+.2f}%")
-                    st.metric("Away edge",         f"{o['away_edge']*100:+.2f}%")
-                    st.metric(f"Best EV (${stake})",
-                              f"${max(o['home_ev'],o['away_ev']):+.2f}")
+                    st.metric("Fair odds (H)",   o['fair_home_odds'])
+                    st.metric("Best odds (H)",   o['best_home_odds'], delta=f"at {o['best_home_bm']}")
+                    st.metric("Home edge",       f"{o['home_edge']*100:+.2f}%")
+                    st.metric("Away edge",       f"{o['away_edge']*100:+.2f}%")
+                    st.metric(f"Best EV (${stake})", f"${max(o['home_ev'],o['away_ev']):+.2f}")
                     kelly_val = max(o['home_kelly'], o['away_kelly'])
-                    st.metric("Kelly bet size",    f"${bankroll*kelly_val:.0f}",
+                    st.metric("Kelly bet size",  f"${bankroll*kelly_val:.0f}",
                               delta=f"{kelly_val*100:.1f}% of bankroll")
 
                 with col3:
                     st.markdown("**⚙️ Adjustments**")
-                    st.write(f"**Elo ratings:**")
-                    st.write(f"• {r['home']}: {p['home_elo']:.0f} pts")
-                    st.write(f"• {r['away']}: {p['away_elo']:.0f} pts")
-                    st.write(f"• Diff: {p['home_elo']-p['away_elo']:+.0f} pts")
-                    st.write("")
+                    st.write(f"**Elo:**  {r['home']} {p['home_elo']:.0f}  |  {r['away']} {p['away_elo']:.0f}")
                     st.write(f"**Breakdown (home %):**")
-                    st.write(f"• Elo effect: {p['elo_component']:+.1f}pp")
-                    st.write(f"• Form effect: {p['form_component']:+.1f}pp")
+                    st.write(f"• Elo effect:    {p['elo_component']:+.1f}pp")
+                    st.write(f"• Form/ML:       {p['form_component']:+.1f}pp")
                     if abs(p['injury_component']) > 0.1:
-                        st.write(f"• Injury: {p['injury_component']:+.1f}pp")
+                        st.write(f"• Injury:        {p['injury_component']:+.1f}pp")
                     if abs(p['rest_component']) > 0.1:
-                        st.write(f"• Rest/fatigue: {p['rest_component']:+.1f}pp")
+                        st.write(f"• Rest/fatigue:  {p['rest_component']:+.1f}pp")
                     if abs(p['travel_component']) > 0.1:
-                        st.write(f"• Travel: {p['travel_component']:+.1f}pp")
+                        st.write(f"• Travel:        {p['travel_component']:+.1f}pp")
                     wx_comp = p.get('weather_component', 0)
                     if abs(wx_comp) > 0.1:
-                        st.write(f"• Weather: {wx_comp:+.1f}pp")
+                        st.write(f"• Weather:       {wx_comp:+.1f}pp")
 
-                # Rest + travel notes
+                    # Advanced stats comparison
+                    hs = p.get('home_adv_stats', {})
+                    as_ = p.get('away_adv_stats', {})
+                    if hs.get('inside50s') or hs.get('clearances'):
+                        st.write("")
+                        st.write("**Advanced stats (recent avg):**")
+                        for stat in ['inside50s','clearances','tackles','hitouts']:
+                            hv = hs.get(stat)
+                            av = as_.get(stat)
+                            if hv and av:
+                                st.write(f"• {stat}: {r['home']} {hv:.1f} vs {r['away']} {av:.1f} ({hv-av:+.1f})")
+
                 if r["rest_notes"] or r["travel_notes"]:
                     st.markdown("**🚌 Situational:**")
                     for n in r["rest_notes"] + r["travel_notes"]:
                         st.write(f"  • {n}")
 
-                # Weather
                 wx = r["wx"]
                 if not wx.get("is_indoor", False):
                     st.markdown(f"**☁️ Weather at {r['venue']}:**")
-                    st.write(f"  {wx.get('condition','—')} | "
-                             f"🌡️{wx.get('temperature_c')}°C "
-                             f"🌧️{wx.get('rain_mm')}mm "
-                             f"💨{wx.get('wind_kmh')}km/h")
+                    st.write(
+                        f"  {wx.get('condition','—')} | "
+                        f"🌡️{wx.get('temperature_c')}°C  "
+                        f"🌧️{wx.get('rain_mm')}mm  "
+                        f"💨{wx.get('wind_kmh')}km/h"
+                    )
                     st.write(f"  {wx.get('impact','—')}")
 
-                # Bias flags
                 if o.get("bias_flags"):
                     st.markdown("**🔍 Market Signals:**")
                     for flag in o["bias_flags"]:
                         st.warning(flag)
 
-                # Per-bookmaker table
                 if o.get("per_bookmaker"):
                     st.markdown("**📋 All bookmaker odds:**")
                     bm_rows = []
                     for bm in o["per_bookmaker"]:
                         bm_rows.append({
-                            "Bookmaker":     bm["bookmaker"],
-                            f"{r['home']} odds": bm["home_odds"],
-                            "H edge":        f"{bm['home_edge']*100:+.2f}%",
-                            f"{r['away']} odds": bm["away_odds"],
-                            "A edge":        f"{bm['away_edge']*100:+.2f}%",
-                            "Overround":     f"{bm['overround']:.1f}%",
-                            "H verdict":     "✅ BET" if bm["home_edge"] > min_edge else "❌",
+                            "Bookmaker":           bm["bookmaker"],
+                            f"{r['home']} odds":   bm["home_odds"],
+                            "H edge":              f"{bm['home_edge']*100:+.2f}%",
+                            f"{r['away']} odds":   bm["away_odds"],
+                            "A edge":              f"{bm['away_edge']*100:+.2f}%",
+                            "Overround":           f"{bm['overround']:.1f}%",
+                            "Verdict":             "✅ BET" if bm["home_edge"] > min_edge else "❌",
                         })
                     bdf = pd.DataFrame(bm_rows)
                     def bm_col(row):
-                        if "BET" in str(row.get("H verdict","")): return ["background-color:#d4edda;color:#155724"]*len(row)
-                        return ["background-color:#f8d7da;color:#721c24"]*len(row)
+                        if "✅" in str(row.get("Verdict","")):
+                            return ["background-color:#d4edda;color:#155724"] * len(row)
+                        return ["background-color:#f8d7da;color:#721c24"] * len(row)
                     st.dataframe(bdf.style.apply(bm_col, axis=1), hide_index=True, use_container_width=True)
 
-                # Full explanation
-                st.markdown("**📝 Full written explanation:**")
+                st.markdown("**📝 Full explanation:**")
                 st.code(r["explanation"], language=None)
 
-                # Final verdict
                 st.divider()
                 if r["classification"] in ("STRONG_BET","BET","SMALL_BET"):
                     best_team = r["home"] if o["home_edge"] >= o["away_edge"] else r["away"]
                     best_edge = max(o["home_edge"], o["away_edge"])
                     best_odds = o["best_home_odds"] if o["home_edge"] >= o["away_edge"] else o["best_away_odds"]
-                    best_bm   = o["best_home_bm"] if o["home_edge"] >= o["away_edge"] else o["best_away_bm"]
+                    best_bm   = o["best_home_bm"]   if o["home_edge"] >= o["away_edge"] else o["best_away_bm"]
                     kelly_bet = bankroll * max(o["home_kelly"], o["away_kelly"])
                     st.success(
                         f"**{r['label']}** — Bet **{best_team}** at **{best_odds}** ({best_bm})\n\n"
                         f"Edge: **{best_edge*100:+.2f}%** | "
-                        f"Kelly suggested bet: **${kelly_bet:.0f}** of your ${bankroll:,} bankroll"
+                        f"Kelly suggested: **${kelly_bet:.0f}** of ${bankroll:,}"
                     )
                 else:
                     st.error("**No value found.** The bookmaker has the edge on this game. Pass.")
+
 
 # ══════════════════════════════════════════════════════════
 # TAB 2: POWER RANKINGS
@@ -645,23 +651,22 @@ with tab1:
 with tab2:
     st.subheader("📊 Elo Power Rankings")
     st.markdown(
-        "Ratings calculated by replaying every AFL game since 2015 "
-        "using a **margin-of-victory adjusted Elo** system. "
-        "Higher = stronger right now."
+        "Ratings computed by replaying every AFL game since 2015 with a "
+        "**margin-of-victory adjusted Elo** system. Higher = stronger right now."
     )
 
     elo_rows = sorted(elo_ratings.items(), key=lambda x: -x[1])
-    elo_tbl = pd.DataFrame([
+    elo_tbl  = pd.DataFrame([
         {
-            "#":            i+1,
+            "#":            i + 1,
             "Team":         t,
             "Elo Rating":   round(r),
             "vs Average":   f"{r-1500:+.0f}",
-            "Approx win% vs avg team": f"{win_probability_from_elo(r, 1500)*100:.1f}%",
+            "Win% vs avg":  f"{win_probability_from_elo(r, 1500)*100:.1f}%",
             "Tier": (
-                "🔥 Elite"   if r > 1580 else
-                "✅ Strong"  if r > 1530 else
-                "🟡 Average" if r > 1480 else
+                "🔥 Elite"    if r > 1580 else
+                "✅ Strong"   if r > 1530 else
+                "🟡 Average"  if r > 1480 else
                 "🔴 Weak"
             ),
         }
@@ -670,16 +675,17 @@ with tab2:
     st.dataframe(elo_tbl, hide_index=True, use_container_width=True)
 
     st.divider()
-    st.markdown("**Model parameters used:**")
+    st.markdown("**Model parameters:**")
     st.markdown("""
     | Parameter | Value | Reason |
     |---|---|---|
-    | K-factor | 20 | Empirically validated for team sports (NBA/NFL standard) |
-    | Scale | 400 | Standard logistic scale |
-    | Home advantage | +50 pts | AFL home ground is significant |
+    | K-factor | 20 | Team sports standard (NBA/NFL validated) |
+    | Scale | 400 | Standard logistic |
+    | Home advantage | +50 pts | AFL home ground effect |
     | Season reversion | 25% | Partial regression to 1500 each off-season |
-    | Margin multiplier | log(margin+1)×2.2/... | FiveThirtyEight NFL formula adapted for AFL |
+    | Margin multiplier | log(margin+1)×2.2/... | FiveThirtyEight NFL formula |
     """)
+
 
 # ══════════════════════════════════════════════════════════
 # TAB 3: LIVE ODDS
@@ -695,14 +701,6 @@ with tab3:
         if "api_status" in st.session_state:
             st.caption(st.session_state["api_status"])
 
-        st.markdown("""
-        **How to read this table:**
-        - *Our Odds* = what the odds should be at our model's probability
-        - *Best Bookie* = highest paying odds available right now
-        - *Overround removed* = true market probability (bookmaker margin stripped out)
-        - *Edge* = positive means bookmaker paying MORE than fair value
-        """)
-
         comp_rows = []
         for game in live_odds:
             home, away = game["home_team"], game["away_team"]
@@ -710,13 +708,9 @@ with tab3:
                 continue
             h_elo = elo_ratings.get(home, INITIAL_RATING)
             a_elo = elo_ratings.get(away, INITIAL_RATING)
-            our_prob = win_probability_from_elo(h_elo, a_elo)
-            our_away = 1 - our_prob
-            our_fair_h = round(1/our_prob, 2)
-
-            true_h, true_a, ovr = remove_overround(
-                game["avg_home_odds"], game["avg_away_odds"]
-            )
+            our_prob    = win_probability_from_elo(h_elo, a_elo)
+            our_fair_h  = round(1 / our_prob, 2)
+            true_h, _, ovr = remove_overround(game["avg_home_odds"], game["avg_away_odds"])
             h_edge = (our_prob * game["best_home_odds"]) - 1
             _, best_h_odds = get_best_bookmaker_for_team(game, home, True)
             _, best_a_odds = get_best_bookmaker_for_team(game, away, False)
@@ -726,7 +720,7 @@ with tab3:
                 "Elo Prob (H)":    f"{our_prob*100:.1f}%",
                 "Market Prob (H)": f"{true_h*100:.1f}%",
                 "Model diff":      f"{(our_prob-true_h)*100:+.1f}pp",
-                "Our Fair Odds":   our_fair_h,
+                "Fair Odds":       our_fair_h,
                 "Best Bookie (H)": best_h_odds,
                 "Edge (H)":        f"{h_edge*100:+.2f}%",
                 "Overround":       f"{ovr:.1f}%",
@@ -736,45 +730,71 @@ with tab3:
 
         cdf = pd.DataFrame(comp_rows)
         def col_live(row):
-            if "✅" in str(row["Signal"]): return ["background-color:#d4edda;color:#155724"]*len(row)
-            return ["background-color:#f8d7da;color:#721c24"]*len(row)
+            if "✅" in str(row["Signal"]):
+                return ["background-color:#d4edda;color:#155724"] * len(row)
+            return ["background-color:#f8d7da;color:#721c24"] * len(row)
         st.dataframe(cdf.style.apply(col_live, axis=1), hide_index=True, use_container_width=True)
+
 
 # ══════════════════════════════════════════════════════════
 # TAB 4: BACKTEST
 # ══════════════════════════════════════════════════════════
 with tab4:
     st.subheader("📈 Model Backtest — Historical Performance")
+
+    if has_hist_odds:
+        st.success(
+            f"✅ **Real historical odds loaded** ({len(hist_odds_df):,} records from aussportsbetting.com.au). "
+            f"Backtest uses actual bookmaker prices — not simulated."
+        )
+    else:
+        st.warning(
+            "⚠️ Real historical odds unavailable. Backtest uses simulated 5% overround. "
+            "Click **Load / Refresh Data** to attempt download from aussportsbetting.com.au."
+        )
+
     st.markdown("""
-    This tests the model against real AFL results from 2015 onwards.
+    **How it works:**  
+    Every historical game is replayed. Where our Elo model had sufficient edge 
+    (using real or simulated bookmaker odds), we place a simulated $10 bet and 
+    record the result. This tells us if the model genuinely beats the market.
 
-    **How it works:** We replay every historical game, making simulated bets
-    wherever the Elo model had sufficient edge, then calculate actual returns.
-
-    **Simulated odds** = fair odds with a typical 5% bookmaker margin applied.
-    This is conservative — in practice you'd shop for better odds.
+    **Closing Line Value (CLV):** Average edge on placed bets. Positive CLV 
+    is the gold-standard signal that a model has genuine long-run edge — 
+    it means you consistently got better-than-closing odds.
     """)
 
     if backtest_btn or st.button("Run Backtest Now"):
-        with st.spinner("Backtesting... (this may take 30 seconds)"):
-            bt = backtest_model(results_df, elo_history, min_edge=min_edge, min_prob=min_prob)
+        with st.spinner("Backtesting all seasons... (may take 30–60s)"):
+            bt = backtest_model(
+                results_df, elo_history,
+                hist_odds_df=hist_odds_df if has_hist_odds else None,
+                min_edge=min_edge,
+                min_prob=min_prob,
+            )
 
         if bt['total_bets'] == 0:
             st.warning("No bets passed the threshold. Lower the minimum edge or probability in the sidebar.")
         else:
-            # Summary metrics
-            m1,m2,m3,m4,m5 = st.columns(5)
-            m1.metric("Total bets", bt['total_bets'])
-            m2.metric("Win rate",   f"{bt['win_rate']*100:.1f}%")
-            m3.metric("Total staked", f"${bt['total_staked']:,.0f}")
-            m4.metric("Total return", f"${bt['total_return']:,.0f}")
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Total bets",    bt['total_bets'])
+            m2.metric("Win rate",      f"{bt['win_rate']*100:.1f}%")
+            m3.metric("Total staked",  f"${bt['total_staked']:,.0f}")
+            m4.metric("Total return",  f"${bt['total_return']:,.0f}")
             roi_delta = "Profitable ✅" if bt['roi'] > 0 else "Loss-making ❌"
-            m5.metric("ROI", f"{bt['roi']:+.2f}%", delta=roi_delta)
+            m5.metric("ROI",           f"{bt['roi']:+.2f}%", delta=roi_delta)
 
-            st.metric("Brier Score (calibration)", bt['brier_score'],
-                      help="Lower = better calibrated. Random = 0.25. Perfect = 0.0.")
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("Avg CLV (edge)",   f"{bt['avg_clv']:+.2f}%",
+                         help="Positive = beating the market consistently")
+            col_b.metric("Brier Score",      bt['brier_score'],
+                         help="Model calibration. Lower = better. Random = 0.25")
+            col_c.metric("Real odds used",   f"{bt['real_odds_pct']}%",
+                         help="% of bets using real historical odds vs simulated")
 
-            # Year-by-year
+            if bt.get('message'):
+                st.caption(bt['message'])
+
             st.markdown("### By Season")
             yr_rows = []
             for yr, d in sorted(bt['by_year'].items()):
@@ -788,96 +808,119 @@ with tab4:
                 })
             ydf = pd.DataFrame(yr_rows)
             def yr_col(row):
-                if "+" in str(row["ROI"]): return ["background-color:#d4edda;color:#155724"]*len(row)
-                return ["background-color:#f8d7da;color:#721c24"]*len(row)
+                if "+" in str(row["ROI"]):
+                    return ["background-color:#d4edda;color:#155724"] * len(row)
+                return ["background-color:#f8d7da;color:#721c24"] * len(row)
             st.dataframe(ydf.style.apply(yr_col, axis=1), hide_index=True, use_container_width=True)
 
-            # Sample bets
-            st.markdown("### Sample Bets")
-            bdf = bt['bets_df'].tail(20)[['year','home','away','bet_team','model_prob','sim_odds','edge','profit','won']]
-            bdf.columns = ['Year','Home','Away','Bet on','Prob','Odds','Edge','P&L ($)','Won']
-            bdf['Edge']  = bdf['Edge'].apply(lambda x: f"{x*100:+.2f}%")
-            bdf['Prob']  = bdf['Prob'].apply(lambda x: f"{x*100:.1f}%")
+            st.markdown("### Sample Bets (most recent 20)")
+            bdf = bt['bets_df'].tail(20)[
+                ['year','home','away','bet_team','model_prob','sim_odds','edge','profit','won','real_odds']
+            ].copy()
+            bdf.columns = ['Year','Home','Away','Bet on','Prob','Odds','Edge','P&L ($)','Won','Real odds']
+            bdf['Edge']    = bdf['Edge'].apply(lambda x: f"{x*100:+.2f}%")
+            bdf['Prob']    = bdf['Prob'].apply(lambda x: f"{x*100:.1f}%")
             bdf['P&L ($)'] = bdf['P&L ($)'].apply(lambda x: f"${x:+.2f}")
+            bdf['Real odds']= bdf['Real odds'].apply(lambda x: "✅" if x else "~sim")
             st.dataframe(bdf, hide_index=True, use_container_width=True)
-
     else:
         st.info("Click **Run Backtest Now** above, or use the sidebar button.")
+
 
 # ══════════════════════════════════════════════════════════
 # TAB 5: HOW IT WORKS
 # ══════════════════════════════════════════════════════════
 with tab5:
     st.subheader("❓ How the Model Works")
-    st.markdown("""
+    st.markdown(f"""
     ## Core philosophy
 
     The goal is NOT to predict winners. The goal is to find where the
-    **bookmaker's odds are wrong** — where the real probability of winning
-    is higher than the bookmaker believes.
+    **bookmaker's odds are wrong** — where our probability estimate is
+    higher than the market implies.
 
     ---
 
     ## Step 1 — Elo Rating System
 
     Every team starts at 1500 points. After each game:
-    - The winner gains points; the loser loses the same amount
-    - The amount transferred depends on **how surprising the result was**
-      and **how big the winning margin was**
+    - Winner gains points; loser loses the same amount (zero-sum)
+    - Amount depends on how surprising the result was **AND** the margin
+    - Margin multiplier uses the FiveThirtyEight NFL formula: `log(margin+1) × 2.2 / (elo_diff × 0.001 + 2.2)`
+    - Each off-season, ratings revert 25% toward 1500
 
-    **Key improvement over basic Elo:** We use a margin-of-victory multiplier
-    so a 60-point win updates ratings more than a 1-point squeaker.
-
-    ---
-
-    ## Step 2 — True Probability
-
-    P(home wins) = 1 / (1 + 10^((away_elo - home_elo - 50) / 400))
-
-    The +50 is home ground advantage. This gives us the **Elo probability**.
-
-    We then run a **calibrated logistic regression** trained on 10 years of
-    AFL results using Elo + recent form features. This is blended:
-
-    **Final = 65% ML + 35% Elo**
+    **Home advantage:** +50 Elo points applied to all home teams.
 
     ---
 
-    ## Step 3 — Removing Bookmaker Margin
+    ## Step 2 — ML Model (form + advanced stats)
 
-    Raw bookmaker odds imply probabilities that sum to >100%. We normalise:
+    A calibrated logistic regression trained on **{len(feature_cols)} features** 
+    including recent form (last 5 games, exponentially weighted) and advanced 
+    stats where available (inside 50s, clearances, tackles).
 
-    true_prob = implied_prob / (sum of all implied probs)
+    Key fix: **Elo diff is NOT in the ML feature set.** This prevents 
+    double-counting — Elo and ML are independent signals that get blended.
 
-    This strips out the bookmaker's profit margin so we compare apples to apples.
+    **Opponent-adjusted scoring:** Instead of raw scoring averages, we 
+    normalise each team's scores by their opponents' Elo ratings, so scoring 
+    110 against a top-8 side is worth more than scoring 110 against a bottom team.
 
     ---
 
-    ## Step 4 — Edge Calculation
+    ## Step 3 — Probability Blend
 
+    ```
+    final_prob = 0.60 × ML_prob + 0.40 × Elo_prob
+    ```
+
+    Both signals are independent — this blend is mathematically valid.
+    ML captures form patterns Elo misses; Elo anchors against overfitting.
+
+    ---
+
+    ## Step 4 — Situational Modifiers
+
+    Applied as Elo adjustments BEFORE probability calculation:
+    - **Injuries:** Player price × position multiplier → Elo penalty
+    - **Short rest:** <6 days → −12 Elo, <8 days → −5 Elo
+    - **Long break:** >21 days → −3 Elo (rust)
+    - **Interstate travel:** −5 Elo; cross-country −10 Elo
+    - **Weather:** Rain/wind reduce the stronger team's advantage
+
+    ---
+
+    ## Step 5 — Market Comparison
+
+    Bookmaker overround is removed to get true market probabilities:
+    ```
+    true_home = (1/home_odds) / ((1/home_odds) + (1/away_odds))
+    ```
+
+    Edge is calculated the same way for live predictions AND backtesting:
+    ```
     edge = (model_probability × bookmaker_odds) - 1
-
-    Positive edge = value bet. We only bet when:
-    - Edge > threshold (set in sidebar)
-    - Model probability > minimum confidence (set in sidebar)
+    ```
 
     ---
 
-    ## Step 5 — Kelly Criterion
+    ## Step 6 — Kelly Criterion
 
-    We size bets using **25% fractional Kelly**:
-
-    Kelly = (odds × prob - (1-prob)) / odds × 25%
-
-    This maximises long-run bankroll growth while limiting downside risk.
+    Bet sizing: 25% fractional Kelly
+    ```
+    Kelly = (odds × prob − (1−prob)) / odds × 25%
+    ```
 
     ---
 
-    ## Data sources
+    ## Data Sources
+
     | Data | Source | Cost |
     |---|---|---|
     | AFL results (2015–now) | Squiggle API | Free |
-    | Bookmaker odds | The Odds API | 500 free/month |
+    | Advanced stats (inside 50s etc) | Squiggle API | Free |
+    | Historical bookmaker odds | aussportsbetting.com.au | Free |
+    | Live bookmaker odds | The Odds API | 500 req/month free |
     | Weather forecasts | Open-Meteo | Free |
     """)
 
